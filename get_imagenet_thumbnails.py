@@ -1,6 +1,6 @@
 import sys
 import os
-import urllib2
+import urllib3
 import logging
 
 import scipy.misc
@@ -23,10 +23,10 @@ def get_imagenet_thumbnail(wnid, k, verbose=False, overwrite=True, outputdir='.'
         logging.info( "Thumbnails are already available for %s" % (wnid) )
       return
 
-
+  http = urllib3.PoolManager()
   url = 'http://www.image-net.org/api/text/imagenet.synset.geturls?wnid=%s' % (wnid)
-  response = urllib2.urlopen( url )
-  urllist = response.readlines()
+  response = http.request('GET', url )
+  urllist = response.data.decode('utf-8').splitlines()
   ini = 0
   outi = 0
   while ini < len(urllist) and outi < k:
@@ -42,8 +42,8 @@ def get_imagenet_thumbnail(wnid, k, verbose=False, overwrite=True, outputdir='.'
 
     try:
       with open(imgfn, 'wb') as imgout:
-        r = urllib2.urlopen ( imgurl, timeout=timeout )
-        imgout.write( r.read() )
+        r = http.request('GET', imgurl, timeout=timeout )
+        imgout.write( r.data )
 
       # check the file 
       scipy.misc.imread( imgfn )

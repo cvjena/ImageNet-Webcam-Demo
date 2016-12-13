@@ -24,7 +24,7 @@ pygame.camera.init()
 class Capture(object):
     """Provides access to video devices."""
 
-    def __init__(self, index = 0):
+    def __init__(self, index = 0, requested_cam_size=(640,480)):
         """Opens a video device for capturing.
         
         index - The number of the device to open.
@@ -34,7 +34,7 @@ class Capture(object):
         
         object.__init__(self)
         self.surface = None
-        self.capture = pygame.camera.Camera(Capture.enumerateDevices[index][0], (640,480), 'RGB')
+        self.capture = pygame.camera.Camera(Capture.enumerateDevices()[index][0], requested_cam_size, 'RGB')
         self.capture.start()
 
 

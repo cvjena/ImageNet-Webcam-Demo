@@ -20,12 +20,12 @@ class Capture(object):
         Throws an exception if the device can't be opened or if the given index
         is out of range.
         """
-        print "CvCapture: initialize camera"        
+        print("CvCapture: initialize camera")
         object.__init__(self)
         self.capture = cv2.VideoCapture()
         self.capture.open(index)
-        self.capture.set( cv2.cv.CV_CAP_PROP_FRAME_WIDTH, requested_cam_size[0] )
-        self.capture.set( cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, requested_cam_size[1] )
+        self.capture.set( cv2.CAP_PROP_FRAME_WIDTH, requested_cam_size[0] )
+        self.capture.set( cv2.CAP_PROP_FRAME_HEIGHT, requested_cam_size[1] )
 
     def __del__(self):
         self.capture.release()

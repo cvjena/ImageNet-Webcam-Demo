@@ -33,8 +33,6 @@ import math
 import time
 import numpy as np
 import matplotlib.pyplot as pylab
-from decaf.scripts.jeffnet import JeffNet
-from decaf.util import smalldata
 import scipy.misc
 import functools
 
