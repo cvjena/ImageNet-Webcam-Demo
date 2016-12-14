@@ -1,12 +1,36 @@
 import argparse
+import logging
+import sys
+import os
+import math
+import time
+import numpy as np
+import matplotlib.pyplot as pylab
+import scipy.misc
+import functools
+
+sys.path.append('/home/simon/Research/lib/caffe.py3/python/')
+import caffe
+caffe.set_mode_cpu()
+
+import pygame.image
+import pygame.surfarray
+import threading
+import json
+import PIL
+
+import ImageNetThumbnails
+
+
+# In[2]:
 
 # main function
 parser = argparse.ArgumentParser()
-parser.add_argument( '-c', '--categories', help='reduced list of categories as a JSON hash', default=None )
-parser.add_argument( '--width', type=int, help='requested camera width', default=256 )
-parser.add_argument( '--height', type=int, help='requested camera height', default=256 )
+parser.add_argument( '-c', '--categories', help='reduced list of categories as a JSON hash', default='all_categories.json' )
+parser.add_argument( '--width', type=int, help='requested camera width', default=512 )
+parser.add_argument( '--height', type=int, help='requested camera height', default=512 )
 parser.add_argument( '-m', '--modeldir', help='directory with model file and meta information', default='/home/rodner/data/deeplearning/models/' )
-parser.add_argument( '--thumbdir', help='directory with thumbnail images for the synsets', default='.' )
+parser.add_argument( '--thumbdir', help='directory with thumbnail images for the synsets', default='/home/rodner/data/demo/imagenet-thumbnails/' )
 parser.add_argument( '--downloadthumbs', help='download non-existing thumbnail images', action='store_true')
 parser.add_argument( '--threaded', help='use classification thread', action='store_true')
 parser.add_argument( '--nocenteronly', help='disable center-only classification mode', action='store_true', default=False)
@@ -18,34 +42,42 @@ parser.add_argument( '--loglevel', help='log level', choices=['debug','info','wa
 parser.add_argument( '--delay', help='delay (0=no delay, negative value=button wait, positive value=milliseconds to wait)', type=float, default=0)
 parser.add_argument( '--pooling', help='type of pooling used', choices=['avg', 'none', 'max'], default='none' )
 parser.add_argument( '--poolingsize', help='pooling size', type=int, default=100 )
-args = parser.parse_args()
+parser.add_argument( '--cnn_model_dir', help='Folder that contains the CNN model. This folder should contain a deploy.protoxt and a file called "model".', default='./model/alexnet_ep_fc2/')
+args = parser.parse_args([])
 
-import logging
+
+# In[3]:
+
+# We assume the blob names are the same as the layer name, which produce these blobs
+global selected_blob, prob_blobs
+prob_blobs = ['anytime_prob_{:02d}'.format(i) for i in [1,2,3,4,5]]
+selected_blob = len(prob_blobs) - 1
+print('Initially using blob {}'.format(prob_blobs[selected_blob]))
+
+
+# In[4]:
+
+proto = os.path.join(args.cnn_model_dir, 'deploy.prototxt')
+cnn_model = os.path.join(args.cnn_model_dir, 'model')
+
+
+# In[5]:
+
 numeric_level = getattr(logging, args.loglevel.upper(), None)
-if not isinstance(numeric_level, int):
-    raise ValueError('Invalid log level: %s' % args.loglevel)
+assert isinstance(numeric_level, int)
 logging.basicConfig(level=numeric_level)
 
 
-import sys
-import os
-import math
-import time
-import numpy as np
-import matplotlib.pyplot as pylab
-import scipy.misc
-import functools
+# In[6]:
 
-import pygame.image
-import pygame.surfarray
-
-import threading
-
-import json
-
-from get_imagenet_thumbnails import get_imagenet_thumbnail
+def draw_text(text, pos):
+  myfont = pygame.font.SysFont("monospace", 20)
+  myfont.set_bold(True)
+  text_object = myfont.render(text, 1, (255,0,0), (0,0,0))
+  screen.blit(text_object, pos)
 
 
+# In[7]:
 
 class SingleFunctionThread(threading.Thread):
   """ Class used for threading """
@@ -63,6 +95,7 @@ class SingleFunctionThread(threading.Thread):
 
 """ load, rescale, and store thumbnail images """
 def create_thumbnail_cache(synsets, timgsize, thumbdir):
+  timgsize = np.array(timgsize).astype(int)
   maxk = 3
   maxtries = 10
 
@@ -119,24 +152,35 @@ def display_results(synsets, scores, woffset, wsize):
     sumscores = sumscores + scores[i]
 
   for i in range(len(synsets)):
-    text = '%s (%2f)' % (synsets[i], scores[i] / sumscores)
+    text = "{:>4d}% - {}".format(int(scores[i] / sumscores * 100), synsets[i].split(',')[0])
     #text = synsets[i]
     label = myfont.render(text, 1, (255,0,0), (0,0,0) )
     screen.blit(label, (woffset[0], woffset[1] + i * rowsep + rowoffset ))
 
+
+# In[8]:
+
+global elapsed
+elapsed = 0
+
+
+# In[9]:
+
 """ classify the image, over and over again """
 def classify_image(center_only=True):
   if capturing:
-    screen.blit(img,(img.get_width(),0))
-
     # transpose image :)
     camimg = np.transpose(pygame.surfarray.array3d(img), [1,0,2])
-
-    # test the conversion
-    #pylab.imsave('test.png', camimg)
-
-    logging.info("Classification (image: %d x %d)" % (camimg.shape[1], camimg.shape[0]))
-    scores = net.classify(camimg, center_only=center_only)
+    
+    logging.debug("Classification (image: %d x %d)" % (camimg.shape[1], camimg.shape[0]))
+    
+    src = net.blobs['data']
+    src.reshape(1,3,*src.data.shape[2:])
+    src.data[0] = preprocess(net, scipy.misc.imresize(camimg,src.data.shape[2:]))
+    start = time.time()
+    net.forward(end=prob_blobs[selected_blob])
+    elapsed = time.time() - start
+    scores = net.blobs[prob_blobs[selected_blob]].data[0].ravel()
 
     if pooling!='none':
       all_scores.append(scores)
@@ -157,39 +201,32 @@ def classify_image(center_only=True):
 
       scores = pooled_scores
 
-    detections = net.top_k_prediction(scores, len(scores))
-    logging.info("ImageNet guesses (1000 categories): {0}".format(detections[1][0:5]))
+    if categories:
+      top_class_ids = [class_id for class_id in np.argsort(-scores) if label_names[class_id] in categories]
+    else:
+      top_class_ids = np.argsort(-scores)
+    
+    top_scores = scores[top_class_ids]
+    top_classes = label_names[top_class_ids]
+    top_desc = label_desc[top_class_ids]
+    
+    logging.debug("ImageNet guesses (1000 categories): {0}".format(top_classes[0:5]))
+
+    display_scores = top_scores[:5]
+    display_synsets = top_classes[:5]
+    display_descs = top_desc[:5]
 
     if categories:
-      synindices = [ k for k in range(len(detections[1])) if detections[1][k] in categories ]
-      descs_reduced = [ detections[1][k] for k in synindices ]
-      synsets_reduced = [ categories[d] for d in descs_reduced ]
-      scores_reduced = [ scores[detections[0][k]] for k in synindices ]
-
-      display_scores = scores_reduced
-      display_descs = descs_reduced
-      display_synsets = synsets_reduced
-
-
-      logging.info("Reduced set ({0} categories): {1}".format(len(categories), descs_reduced[0:5]))
-
-    else:
-      display_scores = scores
-      display_descs = detections[1]
-      display_synsets = detections[2]
+      logging.debug("Reduced set ({0} categories): {1}".format(len(categories), display_descs))
 
 
     imgsize = (camimg.shape[1],camimg.shape[0])
-    display_thumbnails( display_synsets[0:3], (0,camimg.shape[0]), imgsize )
-    display_results ( display_descs[0:3], scores_reduced[0:3], imgsize, imgsize )
+    display_thumbnails( display_synsets[0:3], imgsize, imgsize )
+    display_results ( display_descs[0:3], display_scores[0:3], (0,camimg.shape[0]), imgsize )
+    draw_text('Calc time {:>3d} ms'.format(int(elapsed*1000)),( int(camimg.shape[1]*1.2),int(camimg.shape[0]*0.8)))
 
 
-
-
-
-
-
-
+# In[10]:
 
 data_root = args.modeldir
 requested_cam_size = (args.width,args.height)
@@ -199,15 +236,31 @@ enable_thumbnail_downloading = args.downloadthumbs
 # gldrawPixels and the following command
 # screen = pygame.display.set_mode( cam_size, (pygame.DOUBLEBUF | pygame.OPENGL | pygame.RESIZABLE)   )
 
+
+# In[11]:
+
+def preprocess(net, img):
+    return np.float32(np.rollaxis(img, 2)[::-1]) - net.transformer.mean['data']
+
+def deprocess(net, img):
+    return np.dstack((img + net.transformer.mean['data'])[::-1])
+
 # deep net init
 global net
-net = JeffNet(data_root+'imagenet.jeffnet.epoch90', data_root+'imagenet.jeffnet.meta')
+net = caffe.Classifier(proto, cnn_model,
+                       mean = np.float32([0,0,0]), #104.0, 116.0, 122.0]), # ImageNet mean, training set dependent
+                       channel_swap = (2,1,0)) # the reference model has channels in BGR order instead of RGB
+
+
+# In[12]:
 
 # pygame general initialization
 ret = pygame.init()
 logging.debug("PyGame result: {0}".format(ret))
 logging.debug("PyGame driver: {0}".format(pygame.display.get_driver()))
 
+
+# In[13]:
 
 if args.offlinemode:
     from Camera.VideoCapture import Capture
@@ -218,10 +271,13 @@ else:
     from Camera.Capture import Capture
     logging.info("List of cameras:")
     logging.info(Capture.enumerateDevices())
-    cam = Capture(index=0, requested_cam_size=requested_cam_size)
+    cam = Capture(index=len(Capture.enumerateDevices())-1, requested_cam_size=requested_cam_size)
     timg, width, height, orientation = cam.grabRawFrame()
     cam_size = (width, height)
     logging.info("Video camera size: {0}".format(cam_size))
+
+
+# In[14]:
 
 # pooling settings
 global all_scores
@@ -230,14 +286,28 @@ pooling = args.pooling
 pooling_size = args.poolingsize
 
 
+# In[15]:
 
 # load categories
 global categories
 categories = {}
 if args.categories:
-  categories = json.load( open( args.categories) )
+  categories = json.load(open( args.categories))
 
 
+# In[16]:
+
+global label_names
+label_names = np.array([ll.split(' ')[0] for ll in open('synset_descriptions.txt','rt').read().splitlines()])
+
+
+# In[17]:
+
+global label_desc
+label_desc = np.array([ll[ll.find(' ')+1:] for ll in open('synset_descriptions.txt','rt').read().splitlines()])
+
+
+# In[18]:
 
 # preload synset thumbnails
 logging.debug("Initialize thumbnails")
@@ -248,23 +318,28 @@ logging.debug("Pre-downloading thumbnails")
 if enable_thumbnail_downloading:
   for idx, synset in enumerate(categories):
     logging.info("%d/%d %s" % ( idx, len(categories), synset))
-    get_imagenet_thumbnail(synset, 6, verbose=True, overwrite=False, outputdir=args.thumbdir)
+    #ImageNetThumbnails.download(synset, 6, verbose=True, overwrite=False, outputdir=args.thumbdir)
+    ImageNetThumbnails.generate('/home/atlas1_ssd/simon/ilsvrc12-scaled/', synset, 6, verbose=True, overwrite=False, outputdir=args.thumbdir)
 create_thumbnail_cache ( categories.keys(), (cam_size[0]/3, cam_size[1]/3), args.thumbdir )
 
-# invert category map
-categories = dict( (v,k) for k, v in categories.items() )
 
-
+# In[19]:
 
 logging.debug("Initialize screen")
 # open window
 global screen
 screen = pygame.display.set_mode( ( 2*cam_size[0], 2*cam_size[1] ), (pygame.RESIZABLE)   )
 
+
+# In[20]:
+
 # starting the threading
 global img
 global capturing
 capturing = True
+
+
+# In[21]:
 
 if args.threaded:
   logging.debug("Initialize thread")
@@ -274,34 +349,63 @@ if args.threaded:
 if args.delay>0:
   pygame.time.set_timer(pygame.USEREVENT + 1, int(args.delay*1000))
 
+
+# In[22]:
+
 running = True
-while True:
+finished = False
+webcam_image_buffer = cam.grabFrameNumpy()[0][:,:,::-1].copy()
+reference_size = np.array(webcam_image_buffer.shape[:2][::-1])
+
+pipeline = np.array(PIL.Image.open('./drawings/pipeline.png'))
+scale_factor = webcam_image_buffer.shape[1] / min(pipeline.shape[:2]) * 0.25
+pipeline = scipy.misc.imresize(pipeline, scale_factor)
+pipeline_s = pygame.image.frombuffer(pipeline.copy(), pipeline.shape[:2][::-1], "RGBA")
+pipeline_r = np.array(pipeline.shape[:2][::-1])
+
+prediction = np.array(PIL.Image.open('./drawings/prediction.png'))
+prediction = scipy.misc.imresize(prediction, scale_factor)
+prediction_s = pygame.image.frombuffer(prediction.copy(), prediction.shape[:2][::-1], "RGBA")
+
+while not finished:
   if running:
+    screen.fill ( (0,0,0), screen.get_clip())
+    
     logging.debug("Capture image")
     capturing = False
-    imgstring, w, h, orientation = cam.grabRawFrame()
-    img = pygame.image.fromstring(imgstring[::-1], (w,h), "RGB" )
-    img = pygame.transform.flip(img, True, True)
+    webcam_image_buffer[...] = cam.grabFrameNumpy()[0][:,:,::-1]
+    img = pygame.image.frombuffer(webcam_image_buffer, webcam_image_buffer.shape[:2][::-1], "RGB" )
+    img = pygame.transform.flip(img, False, False)
+    screen.blit(img,(0,0))
     capturing = True
-
+    
     if not args.threaded:
       classify_image(center_only=(not args.nocenteronly))
 
-    screen.blit(img,(0,0))
+    screen.blit(pipeline_s, (reference_size*np.array([1.2,0.1])).astype(int) )
+    screen.blit(prediction_s, (reference_size*np.array([1.2,0.1]) + pipeline_r*np.array([-0.1,0.38]) + selected_blob*pipeline_r*np.array([0.19,0])).astype(int) )
+    
     pygame.display.flip()
-
 
   blocking = True
   while blocking:
     for event in pygame.event.get():
-      if event.type==pygame.QUIT:sys.exit()
-      if event.type==pygame.KEYDOWN and event.key==pygame.K_SPACE:
-        logging.debug("Setting running flag to: {0}".format(running))
-        running = not running
-        pygame.event.clear(pygame.KEYUP)
-        pygame.event.clear(pygame.KEYDOWN)
-      if event.type==pygame.KEYDOWN and event.key==pygame.K_q:
-          sys.exit()
+      if event.type==pygame.QUIT:
+        sys.exit()
+    
+      if event.type==pygame.KEYDOWN:
+          if event.key==pygame.K_SPACE:
+            logging.debug("Setting running flag to: {0}".format(running))
+            running = not running
+            pygame.event.clear(pygame.KEYUP)
+            pygame.event.clear(pygame.KEYDOWN)
+          finished = event.key==pygame.K_q
+          if event.key in [pygame.K_RIGHT, pygame.K_UP, pygame.K_PAGEUP] and selected_blob<len(prob_blobs)-1:
+            selected_blob += 1
+            logging.info("Switching to blob {}".format(prob_blobs[selected_blob]))
+          if event.key in [pygame.K_LEFT, pygame.K_DOWN, pygame.K_PAGEDOWN] and selected_blob>0:
+            selected_blob -= 1
+            logging.info("Switching to blob {}".format(prob_blobs[selected_blob]))        
       if event.type==pygame.USEREVENT+1:
         blocking = False
 
@@ -310,3 +414,49 @@ while True:
 
 #  if args.delay>0:
 #   time.sleep(args.delay)
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+

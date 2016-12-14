@@ -1,2 +1,5 @@
 model
 *.jpg
+thumbnails
+*__pycache__
+.ipynb_checkpoints

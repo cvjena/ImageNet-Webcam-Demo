@@ -50,6 +50,10 @@ class Capture(object):
         height, width, depth = cimg.shape
         return cimg.tostring(), width, height, 1
 
+    def grabFrameNumpy(self):
+        result, cimg = self.capture.read() # cimg will represent the image as numpy array
+        height, width, depth = cimg.shape
+        return cimg, width, height, 1
 
     @staticmethod
     def enumerateDevices():
