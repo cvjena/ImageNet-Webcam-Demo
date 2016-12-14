@@ -9,9 +9,9 @@ import matplotlib.pyplot as pylab
 import scipy.misc
 import functools
 
-sys.path.append('/home/simon/Research/lib/caffe.py3/python/')
+sys.path.append('./caffe_pp2/python/')
 import caffe
-caffe.set_mode_cpu()
+caffe.set_mode_gpu()
 
 import pygame.image
 import pygame.surfarray
@@ -21,16 +21,21 @@ import PIL
 
 import ImageNetThumbnails
 
+sys.path.append('./classification_framework2/')
+import Classification
+import Resize
+import Crop
+import Caffe
+
 
 # In[2]:
 
 # main function
 parser = argparse.ArgumentParser()
-parser.add_argument( '-c', '--categories', help='reduced list of categories as a JSON hash', default='all_categories.json' )
+parser.add_argument( '-c', '--categories', help='reduced list of categories as a JSON hash', default='data/all_categories.json' )
 parser.add_argument( '--width', type=int, help='requested camera width', default=512 )
 parser.add_argument( '--height', type=int, help='requested camera height', default=512 )
-parser.add_argument( '-m', '--modeldir', help='directory with model file and meta information', default='/home/rodner/data/deeplearning/models/' )
-parser.add_argument( '--thumbdir', help='directory with thumbnail images for the synsets', default='/home/rodner/data/demo/imagenet-thumbnails/' )
+parser.add_argument( '--thumbdir', help='directory with thumbnail images for the synsets', default='./thumbnails' )
 parser.add_argument( '--downloadthumbs', help='download non-existing thumbnail images', action='store_true')
 parser.add_argument( '--threaded', help='use classification thread', action='store_true')
 parser.add_argument( '--nocenteronly', help='disable center-only classification mode', action='store_true', default=False)
@@ -43,6 +48,7 @@ parser.add_argument( '--delay', help='delay (0=no delay, negative value=button w
 parser.add_argument( '--pooling', help='type of pooling used', choices=['avg', 'none', 'max'], default='none' )
 parser.add_argument( '--poolingsize', help='pooling size', type=int, default=100 )
 parser.add_argument( '--cnn_model_dir', help='Folder that contains the CNN model. This folder should contain a deploy.protoxt and a file called "model".', default='./model/alexnet_ep_fc2/')
+parser.add_argument( '--fontsize', type=int, default=50)
 args = parser.parse_args([])
 
 
@@ -71,7 +77,7 @@ logging.basicConfig(level=numeric_level)
 # In[6]:
 
 def draw_text(text, pos):
-  myfont = pygame.font.SysFont("monospace", 20)
+  myfont = pygame.font.SysFont("monospace", args.fontsize)
   myfont.set_bold(True)
   text_object = myfont.render(text, 1, (255,0,0), (0,0,0))
   screen.blit(text_object, pos)
@@ -105,7 +111,7 @@ def create_thumbnail_cache(synsets, timgsize, thumbdir):
     tryk = 0
     successk = 0
     while tryk < maxtries and successk < maxk:
-      thumbfn = thumbdir + os.path.sep + '%s_thumbnail_%04d.jpg' % ( synset, tryk )
+      thumbfn = os.path.join(thumbdir, '%s'%synset, 'thumbnail_%04d.jpg'%tryk)
       try:
         timgbig = pygame.image.load( thumbfn )
       except:
@@ -142,7 +148,7 @@ def display_results(synsets, scores, woffset, wsize):
   # delete previous area
   screen.fill ( (0,0,0), pygame.Rect(woffset[0], woffset[1], wsize[0], wsize[1]) )
 
-  myfont = pygame.font.SysFont("monospace", 20)
+  myfont = pygame.font.SysFont("monospace", args.fontsize)
   myfont.set_bold(True)
   rowsep = int ( wsize[1] / len(synsets) )
   rowoffset = rowsep/2
@@ -152,7 +158,7 @@ def display_results(synsets, scores, woffset, wsize):
     sumscores = sumscores + scores[i]
 
   for i in range(len(synsets)):
-    text = "{:>4d}% - {}".format(int(scores[i] / sumscores * 100), synsets[i].split(',')[0])
+    text = "{:>4d}% - {}".format(int(scores[i] * 100), synsets[i].split(',')[0])
     #text = synsets[i]
     label = myfont.render(text, 1, (255,0,0), (0,0,0) )
     screen.blit(label, (woffset[0], woffset[1] + i * rowsep + rowoffset ))
@@ -174,13 +180,12 @@ def classify_image(center_only=True):
     
     logging.debug("Classification (image: %d x %d)" % (camimg.shape[1], camimg.shape[0]))
     
-    src = net.blobs['data']
-    src.reshape(1,3,*src.data.shape[2:])
-    src.data[0] = preprocess(net, scipy.misc.imresize(camimg,src.data.shape[2:]))
+    camimg = camimg.astype(np.float32)/255
+    scores = classifier.compute(camimg)
+    # Ugly hack to get the pure CNN time
     start = time.time()
-    net.forward(end=prob_blobs[selected_blob])
+    net.get_net().forward(end=prob_blobs[selected_blob])
     elapsed = time.time() - start
-    scores = net.blobs[prob_blobs[selected_blob]].data[0].ravel()
 
     if pooling!='none':
       all_scores.append(scores)
@@ -228,29 +233,20 @@ def classify_image(center_only=True):
 
 # In[10]:
 
-data_root = args.modeldir
 requested_cam_size = (args.width,args.height)
-enable_thumbnail_downloading = args.downloadthumbs
-
-# OpenGL support not yet implemented
-# gldrawPixels and the following command
-# screen = pygame.display.set_mode( cam_size, (pygame.DOUBLEBUF | pygame.OPENGL | pygame.RESIZABLE)   )
-
-
-# In[11]:
-
-def preprocess(net, img):
-    return np.float32(np.rollaxis(img, 2)[::-1]) - net.transformer.mean['data']
-
-def deprocess(net, img):
-    return np.dstack((img + net.transformer.mean['data'])[::-1])
 
 # deep net init
-global net
-net = caffe.Classifier(proto, cnn_model,
-                       mean = np.float32([0,0,0]), #104.0, 116.0, 122.0]), # ImageNet mean, training set dependent
-                       channel_swap = (2,1,0)) # the reference model has channels in BGR order instead of RGB
-
+global classifier, net
+classifier = Classification.Classification()
+cropsize = 224
+classifier.add_algorithm(Resize.Resize((256,), mode='resize_smaller_side'))
+classifier.add_algorithm(Crop.Crop((cropsize,cropsize),'center'))
+net = Caffe.Caffe(proto, cnn_model,
+                mean = np.float32([0,0,0]),
+                outblob = prob_blobs[selected_blob],
+                endlayer = prob_blobs[selected_blob],
+                batchsize = 1)
+classifier.add_algorithm(net)
 
 # In[12]:
 
@@ -298,13 +294,13 @@ if args.categories:
 # In[16]:
 
 global label_names
-label_names = np.array([ll.split(' ')[0] for ll in open('synset_descriptions.txt','rt').read().splitlines()])
+label_names = np.array([ll.split(' ')[0] for ll in open('data/synset_descriptions.txt','rt').read().splitlines()])
 
 
 # In[17]:
 
 global label_desc
-label_desc = np.array([ll[ll.find(' ')+1:] for ll in open('synset_descriptions.txt','rt').read().splitlines()])
+label_desc = np.array([ll[ll.find(' ')+1:] for ll in open('data/synset_descriptions.txt','rt').read().splitlines()])
 
 
 # In[18]:
@@ -315,7 +311,7 @@ global thumbnail_cache
 thumbnail_cache = {}
 
 logging.debug("Pre-downloading thumbnails")
-if enable_thumbnail_downloading:
+if args.downloadthumbs:
   for idx, synset in enumerate(categories):
     logging.info("%d/%d %s" % ( idx, len(categories), synset))
     #ImageNetThumbnails.download(synset, 6, verbose=True, overwrite=False, outputdir=args.thumbdir)
@@ -402,9 +398,13 @@ while not finished:
           finished = event.key==pygame.K_q
           if event.key in [pygame.K_RIGHT, pygame.K_UP, pygame.K_PAGEUP] and selected_blob<len(prob_blobs)-1:
             selected_blob += 1
+            net.set_output(outblob = prob_blobs[selected_blob],
+                endlayer = prob_blobs[selected_blob])
             logging.info("Switching to blob {}".format(prob_blobs[selected_blob]))
           if event.key in [pygame.K_LEFT, pygame.K_DOWN, pygame.K_PAGEDOWN] and selected_blob>0:
             selected_blob -= 1
+            net.set_output(outblob = prob_blobs[selected_blob],
+                endlayer = prob_blobs[selected_blob])
             logging.info("Switching to blob {}".format(prob_blobs[selected_blob]))        
       if event.type==pygame.USEREVENT+1:
         blocking = False
