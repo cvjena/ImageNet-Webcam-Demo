@@ -14,9 +14,10 @@ then
     bash ./Miniconda3-latest-Linux-x86_64.sh -b -p $conda_dir
     rm Miniconda3-latest-Linux-x86_64.sh
     $conda_exec config --add channels conda-forge 
-    $conda_exec install -y python=3.5 numpy matplotlib scipy json-c pillow urllib3 glob2 protobuf hdf5 gflags glog openblas boost scikit-image opencv || exit $?
+    $conda_exec install -y python=3.5 numpy matplotlib scipy json-c pillow urllib3 glob2 protobuf hdf5 gflags glog openblas boost scikit-image  || exit $?
     $conda_exec install -y -c cogsci pygame=1.9.2a0 || exit $?
     $conda_exec install -y -c activisiongamescience python-gflags=3.0.5 || exit $?
+    $conda_exec install -y -c menpo opencv3 || exit $?
     $conda_dir/bin/pip install pyprind
 fi
 . $conda_dir/bin/activate root 
